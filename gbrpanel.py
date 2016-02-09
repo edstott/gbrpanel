@@ -10,12 +10,14 @@ outdir = 'out'
 outfile = 'out'
 indir = 'test'
 
-filetypes = ['GBL','GBS','GTL','GTO','GTS','Outline']
+filetypes = ['GBL','GBS','GTL','GTO','GTS','Outline','TXT']
+#filetypes = ['Outline']
+REPORT_FILE = 'report.txt'
 
-AP_RE = re.compile('\%AD(D\d+)([RCOP],\d+\.\d+(X\d+(\.\d+)?)*)\*\%')	#Aperture definition
+AP_RE = re.compile('\%AD(D\d+)(([RCOP]),(\d+(?:\.\d+)?)(?:X(\d+(?:\.\d+)?))*)\*\%')	#Aperture definition
 APM_RE = re.compile('\%AD(D\d+)([a-zA-Z]\w*)\*\%')	#Aperture macro definition
 AM_RE = re.compile('\%AM([a-zA-Z]\w*)\*') #Begin Aperture Macro
-AMP_RE = re.compile('(1|21|4),(-?\d+(\.\d+)?,)*(-?\d+(\.\d+)?\*)') #Primitive code in macro
+AMP_RE = re.compile('(1|21|4),(?:(-?\d+(?:\.\d+)?),)*(?:(-?\d+(?:\.\d+)?)\*)') #Primitive code in macro
 D_RE = re.compile('(D(\d+))\*')	#Operation
 C_RE = re.compile('([XY])(-?\d+)(Y(-?\d+))?(I(-?\d+))?(J(-?\d+))?(D0[12])\*') #Draw commands
 G_RE = re.compile('G(\d\d)(.*)\*') #Graphics, modes, comments
@@ -33,11 +35,13 @@ DEF_PREC = (5,5)
 #DEF_FORMAT = ('X{:0'+str(DEF_DIGITS[0])+'d}','Y{:0'+str(DEF_DIGITS[1])+'d}')
 DEF_FORMAT = ('X{:d}','Y{:d}')
 DEF_OFF_FORMAT = ('I{:d}','J{:d}')
+DEF_IN_OFFSET = (15.0,15.0)
 
-CHECK_DIMS = False
+CHECK_DIMS =True
+DIM_TOL = 0.5
 
-boardpitch = (100,100)
-boarddims = (100,100)
+boardpitch = (80.0,90.0)
+boarddims = (70.0,80.0)
 paneldims = (10,10)
 
 def WriteGerber():	
@@ -50,10 +54,10 @@ def WriteGerber():
 		file.write('%FSLAX{:d}{:d}Y{:d}{:d}*%\n'.format(outdigits[0]-outprec[0],outprec[0],outdigits[1]-outprec[1],outprec[1]))
 		
 		#Write units
-		if MOMM:
+		if True:#MOMM:
 			file.write('%MOMM*%\n')
-		else:
-			file.write('%MOIN*%\n')
+		#else:
+		#	file.write('%MOIN*%\n')
 			
 		#Write macros
 		for m,d in outamdict.items():
@@ -64,7 +68,10 @@ def WriteGerber():
 			
 		#Write apertures
 		for a,d in outapdict.items():
-			file.write('%AD'+d+a+'*%\n')
+			if d[1]: #Apertures that have been translated
+				file.write('%AD'+d[0]+d[1]+'*%\n')
+			else: #Apertures that are macro references
+				file.write('%AD'+d[0]+a+'*%\n')
 			
 		#Write commands
 		for g in outgerber:
@@ -77,6 +84,8 @@ if __name__ == '__main__':
 
 	pairs = pairs.getPairs()
 	#pairs = pairs[0:5]
+	panels = []
+	badDimRecord = []
 
 	for ft in filetypes:	#Loop over gerber file extensions
 		print('File Extension .'+ft)
@@ -103,17 +112,26 @@ if __name__ == '__main__':
 			inapmap = {}
 			comments = []
 			digits = DEF_DIGITS
-			inprec = DEF_PREC
+			inprec = None
 			informat = DEF_FORMAT
-			MOMM = True
+			MOMM = None
 			currentMacro = None
+			unitScale = None
+			inoffset = DEF_IN_OFFSET
+			xcoord = 0
+			ycoord = 0
+			badLines = False
+			badDims = 0
 			
 			#Set up board origin based on index and dimensions
 			boardorigin = (int(boardidx/paneldims[0])*boardpitch[0],boardidx%paneldims[0]*boardpitch[1])
 			#print('  Board '+str(boardidx)+': group '+pair[0]+' zip '+pair[1])
 			
 			#Extract file
-			subprocess.run(['7z','e',pair[1],'-y','Gerber/'+filename],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+			if not ft == 'Outline': #Don't extract the outline, use the reference PCB.Outline
+				if subprocess.call(['7z','e',pair[1],'-y','Gerber/'+filename],stdout=subprocess.PIPE,stderr=subprocess.PIPE):
+					print('Could not unzip '+filename+' from '+pair[1])
+					raise Exception
 
 			with open(filename,'r') as file:
 				
@@ -124,16 +142,26 @@ if __name__ == '__main__':
 					m = AP_RE.match(line)	#Check for aperture definition
 					if m:
 						if m.group(2) not in outapdict:	#Does this aperture already exist?
-							outapdict[m.group(2)] = 'D'+str(outapDidx)  #If not, add to output dictionary
+							if m.group(3) == 'C': #Circle has one dimension
+								apDims = [str(float(m.group(4))*unitScale)]
+							elif m.group(3) == 'P': #Polygon has one dimension, and optional rotation and hole size
+								apDims = [str(float(m.group(4))*unitScale)]
+								if m.group(5): #Rotation is not converted
+									apDims += [m.group(5)]
+									if len(m.groups())>=6: #Hole size is converted
+										apDims += [str(float(m.group(6))*unitScale)]
+							else:
+								apDims = [str(float(i)*unitScale) for i in m.groups()[3:]]
+							outapdict[m.group(2)] = ('D'+str(outapDidx),m.group(3)+','+'X'.join(apDims))  #If not, add to output dictionary
 							outapDidx += 1
-						inapmap[m.group(1)] = outapdict[m.group(2)] #Add a map from file D-number to output D-number
+						inapmap[m.group(1)] = outapdict[m.group(2)][0] #Add a map from file D-number to output D-number
 						lineok = True
 						
 					m = APM_RE.match(line)	#Check for aperture macro definition
 					if m:
 						macro = inamdict[m.group(2)] #Find new name for this macro
-						outapdict[macro] = outamdict[macro]['MacroD'] #Create an output mapping for the macros D code
-						inapmap[m.group(1)] = outapdict[macro] #Create a D code mapping
+						outapdict[macro] = (outamdict[macro]['MacroD'],None) #Create an output mapping for the macros D code
+						inapmap[m.group(1)] = outamdict[macro]['MacroD'] #Create a D code mapping
 						lineok = True
 						
 					m = AM_RE.match(line) #Macro definition
@@ -146,9 +174,33 @@ if __name__ == '__main__':
 						lineok = True
 						
 					m = AMP_RE.match(line) #Match a macro primitive
+					#'(1|21|4),(-?\d+(\.\d+)?,)*(-?\d+(\.\d+)?\*)')
 					if m and currentMacro: #Only valid if a macro is open
-						outamdict[currentMacro]['Macro'] += [line]
-						lineok = True
+						if m.group(1) == '1': #Circle
+							amp = m.group(0)[:-1].split(',')
+							amp[2] = str(float(amp[2])*unitScale)
+							amp[3] = str(float(amp[3])*unitScale)
+							amp[4] = str(float(amp[4])*unitScale)
+						
+							outamdict[currentMacro]['Macro'] += [','.join(amp)+'*\n']
+							lineok = True
+							
+						if m.group(1) == '21': #Centre Line Rectangle
+							amp = m.group(0)[:-1].split(',')
+							amp[2] = str(float(amp[2])*unitScale)
+							amp[3] = str(float(amp[3])*unitScale)
+							amp[4] = str(float(amp[4])*unitScale)
+							amp[5] = str(float(amp[5])*unitScale)
+						
+							outamdict[currentMacro]['Macro'] += [','.join(amp)+'*\n']
+							lineok = True
+							
+						if m.group(1) == '4': #Outline
+							amp = m.group(0)[:-1].split(',')
+							amp = amp[0:3] + [str(float(i)*unitScale) for i in amp[3:-1]] + [amp[-1]] #Convert everything except the Exposure flag, point count and rotation
+							
+							outamdict[currentMacro]['Macro'] += [','.join(amp)+'*\n']
+							lineok = True
 						
 					if line == '%\n' and currentMacro: #End of a macro
 						currentMacro = None	
@@ -166,41 +218,76 @@ if __name__ == '__main__':
 					m = C_RE.match(line)	#Check for a coordinate
 					if m:	#'([XY])(\d+)(Y(\d+))?(I(-?\d+))?(J(-?\d+))?(D0[12])\*'
 						outstr = ''
-						xcoord = 0
-						ycoord = 0
+						icoord = 0
+						jcoord = 0
+						xPresent = False
+						yPresent = False
+						iPresent = False
+						jPresent = False
+						
+						#print(line[0:-1])
+						
 						if m.group(1)=='Y': #Y coordinate only
-							ycoord = float(m.group(2))*scale[1]+boardorigin[1]*10**outprec[1]
-							outstr = outformat[1].format(int(ycoord))
+							ycoord = float(m.group(2))*unitScale/10**inprec[1]-inoffset[1]
+							yPresent = True
+							#print('Y')
 						elif m.group(3): #X and Y coordinates
-							xcoord = float(m.group(2))*scale[0]+boardorigin[0]*10**outprec[0]
-							ycoord = float(m.group(4))*scale[1]+boardorigin[1]*10**outprec[1]
-							outstr = outformat[0].format(int(xcoord))+outformat[1].format(int(ycoord))
+							xcoord = float(m.group(2))*unitScale/10**inprec[0]-inoffset[0]
+							ycoord = float(m.group(4))*unitScale/10**inprec[1]-inoffset[1]
+							xPresent = True
+							yPresent = True
+							#print('XY')
 						else: #X coordinate only
-							xcoord = float(m.group(2))*scale[0]+boardorigin[0]*10**outprec[0]
-							outstr = outformat[0].format(int(xcoord))
+							xcoord = float(m.group(2))*unitScale/10**inprec[0]-inoffset[0]
+							xPresent = True
+							#print('X')
 						if m.group(5):	#I offset present
-							icoord = float(m.group(6))*scale[0]
-							outstr += outoffformat[0].format(int(icoord))
+							icoord = float(m.group(6))*unitScale/10**inprec[0]
+							iPresent = True
 						if m.group(7):	#J offset present
-							jcoord = float(m.group(8))*scale[1]
-							outstr += outoffformat[1].format(int(jcoord))
-						outstr += m.group(9)+'*'
+							jcoord = float(m.group(8))*unitScale/10**inprec[1]
+							jPresent = True
+							
+							
+						#print('X: '+str(xcoord))
+						#print('Y: '+str(ycoord))
+							
 						
 						if CHECK_DIMS:
-							if xcoord/(10**outprec[0]) < boardorigin[0]:
-								print("Drawing X outside allowed region "+str(xcoord/(10**outprec[0]))+'<'+str(boardorigin[0]))
-							elif xcoord/(10**outprec[0]) > boardorigin[0]+boarddims[0]:
-								print("Drawing X outside allowed region "+str(xcoord/(10**outprec[0]))+'>'+str(boardorigin[0]+boarddims[0]))
-							elif ycoord/(10**outprec[1]) < boardorigin[1]:
-								print("Drawing Y outside allowed region "+str(ycoord/(10**outprec[1]))+'<'+str(boardorigin[1]))
-							elif ycoord/(10**outprec[1]) > boardorigin[1]+boarddims[1]:
-								print("Drawing Y outside allowed region "+str(ycoord/(10**outprec[1]))+'>'+str(boardorigin[1]+boarddims[1]))
+							if xcoord+icoord < -DIM_TOL:
+								#print("Drawing X outside allowed region "+str(xcoord+icoord)+' < 0.0')
+								pass
+							elif xcoord+icoord-boarddims[0] > DIM_TOL:
+								#print("Drawing X outside allowed region "+str(xcoord+icoord)+' > '+str(boarddims[0]))
+								pass
+							elif ycoord+jcoord < -DIM_TOL:
+								#print("Drawing Y outside allowed region "+str(ycoord+jcoord)+' < 0.0')
+								pass
+							elif ycoord+jcoord-boarddims[1] > DIM_TOL:
+								#print("Drawing Y outside allowed region "+str(ycoord+jcoord)+' > '+str(boarddims[1]))
+								pass
 							else:
-								outgerber += [outstr]				
-								lineok = True
+								lineok = True		
 						else:
-							outgerber += [outstr]				
+							lineok = True									
+								
+						if xPresent:
+							outstr += outformat[0].format(int((xcoord+boardorigin[0])*10**outprec[0]))
+						if yPresent:
+							outstr += outformat[1].format(int((ycoord+boardorigin[1])*10**outprec[1]))
+						if iPresent:
+							outstr += outoffformat[0].format(int(icoord*10**outprec[0]))
+						if jPresent:
+							outstr += outoffformat[1].format(int(jcoord*10**outprec[1]))
+							
+							
+						outstr += m.group(9)+'*'
+						
+						if lineok:
+							outgerber += [outstr]	
+						else:
 							lineok = True
+							badDims += 1
 					
 					m = G_RE.match(line)	#Check for G code
 					if m:
@@ -219,21 +306,18 @@ if __name__ == '__main__':
 							digits = (int(m.group(1))+int(m.group(2)),int(m.group(3))+int(m.group(4)))
 							inprec = (int(m.group(2)),int(m.group(4)))
 							informat = ('X{:0'+str(digits[0])+'d}','Y{:0'+str(digits[1])+'d}')
-							if MOMM:
-								scale = (10**(outprec[0]-inprec[0]),10**(outprec[1]-inprec[1]))
-							else:
-								scale = (25.4*10**(outprec[0]-inprec[0]),25.4*10**(outprec[1]-inprec[1]))
+							scale = (10**(outprec[0]-inprec[0]),10**(outprec[1]-inprec[1]))
 							lineok = True
 							
 					m = MO_RE.match(line)	#Units spec
 					if m:
 						if m.group(1) == 'MM':
 							MOMM = True
-							scale = (10**(outprec[0]-inprec[0]),10**(outprec[1]-inprec[1]))
+							unitScale = 1.0
 							lineok = True
 						elif m.group(1) == 'IN':
 							MOMM = False
-							scale = (25.4*10**(outprec[0]-inprec[0]),25.4*10**(outprec[1]-inprec[1]))
+							unitScale = 25.4
 							lineok = True
 					
 					m = LP_RE.match(line)	#New level
@@ -249,9 +333,14 @@ if __name__ == '__main__':
 						lineok = True
 							
 					if not lineok:
-						print('Unrecognised line: '+line)
-						print('  Board '+str(boardidx)+': group '+pair[0]+' zip '+pair[1])
+						if not badLines:
+							badLines = True
+							print('Board '+str(boardidx)+': group '+pair[0]+' zip '+pair[1])
+						print('Bad line: '+line[0:-1])
 
+			if badDims:
+				badDimRecord += ['Layer '+ft+' Panel '+str(panelidx)+' Board '+str(boardidx)+' group '+pair[0]+' zip '+pair[1]+' '+str(badDims)+' bad dimensions']
+						
 			boardidx += 1
 			if boardidx == paneldims[0]*paneldims[1]:	#Write the output if the panel is full
 				WriteGerber()
@@ -268,9 +357,24 @@ if __name__ == '__main__':
 				outoffformat = DEF_OFF_FORMAT
 				outprec = DEF_PREC
 				#print(' Panel '+str(panelidx))
+				panels += [[outfile+str(panelidx)+'.'+ft,str(boardidx)]]
 
 		#Write any partially-full final panel
 		if boardidx > 0:
 			WriteGerber()
+			panels += [[outfile+str(panelidx)+'.'+ft,str(boardidx)]]
+			
+	#Write report
+	with open(os.path.join(outdir,REPORT_FILE),'w') as f:
+		f.write('Gerber panelliser report\n')
+		f.write('Layers processed: '+' '.join(filetypes)+'\n')
+		f.write('Panels processed:'+'\n')
+		for p in panels:
+			f.write('  Panel '+p[0]+': '+p[1]+' boards'+'\n')
+		f.write('Bad Dimensions:'+'\n')
+		for b in badDimRecord:
+			f.write('  '+b+'\n')
+		
+		
 		
 	
