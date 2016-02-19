@@ -12,6 +12,7 @@ DIM_TOL = 0.5
 DEF_IN_OFFSET = (15.0,15.0)
 
 OUT_UNIT_STRING = 'METRIC,LZ'
+OUT_COMMENTS = ['Layer_Color=6321','FILE_FORMAT=4:4','TYPE=PLATED']
 
 M_RE = re.compile('M(48|30)$')
 COM_RE = re.compile(';(.*)')
@@ -19,7 +20,8 @@ UNIT_RE = re.compile('(INCH|METRIC),(LZ|TZ)$')
 TDEF_RE = re.compile('T(\d+)([CFS]\.?\d+(?:\.\d+)?){3}$')
 EOH_RE = re.compile('\%$|M95$')
 T_RE = re.compile('T(\d+)$')
-C_RE = re.compile('([XY])(\d+)(?:Y(\d+))?$')
+C_RE = re.compile('([XY])(-?)(\d+)(?:Y(-?)(\d+))?$')
+
 
 def decodeM(self,m):#Decode M-code
 	if m.group(1) == '48':
@@ -52,6 +54,10 @@ def decodeUNIT(self,m):#Decode units
 		if self.inch and self.LZ:
 			self.inunitScale = 25.4
 			self.decimalscale = 10**2
+			lineok = True
+		elif (not self.inch) and self.LZ and 'FILE_FORMAT=4:4' in self.comments:
+			self.inunitScale = 1.0
+			self.decimalscale = 10**4
 			lineok = True
 		else:
 			print('Unsupported input units '+m.group(0))
@@ -101,14 +107,20 @@ def decodeC(self,m):
 		#print(m.group(0))
 		if m.group(1) == 'X':
 			lineok = True
-			self.xcoord = float('0.'+m.group(2))*self.decimalscale*self.inunitScale-DEF_IN_OFFSET[0]
+			self.xcoord = float('0.'+m.group(3))*self.decimalscale*self.inunitScale-DEF_IN_OFFSET[0]
+			if m.group(2):
+				self.xcoord *= -1
 			x = True
-			if m.group(3):
-				self.ycoord = float('0.'+m.group(3))*self.decimalscale*self.inunitScale-DEF_IN_OFFSET[1]
+			if m.group(5):
+				self.ycoord = float('0.'+m.group(5))*self.decimalscale*self.inunitScale-DEF_IN_OFFSET[1]
+				if m.group(4):
+					self.ycoord *= -1
 				y = True
-		elif not m.group(3):
+		elif not m.group(5):
 			lineok = True
-			self.ycoord = float('0.'+m.group(2))*self.decimalscale*self.inunitScale-DEF_IN_OFFSET[0]
+			self.ycoord = float('0.'+m.group(3))*self.decimalscale*self.inunitScale-DEF_IN_OFFSET[0]
+			if m.group(2):
+				self.xcoord *= -1
 			x = True
 		#print('{}, {}'.format(self.xcoord,self.ycoord))
 			
@@ -122,10 +134,10 @@ def decodeC(self,m):
 	outstr = ''	
 	if x:
 		#outstr = 'X{:06d}'.format(int(self.xcoord*self.outunitscale))
-		outstr = 'X{:.3f}'.format(self.xcoord)
+		outstr = 'X{:.2f}'.format(self.xcoord)
 	if y:
 		#outstr += 'Y{:06d}'.format(int(self.ycoord*self.outunitscale))
-		outstr += 'Y{:.3f}'.format(self.ycoord)
+		outstr += 'Y{:.2f}'.format(self.ycoord)
 		
 	if lineok:
 		self.drilldata += [outstr]	
@@ -152,7 +164,6 @@ class ExcellonBuilder:
 		self.boardidx = 0
 		self.drillidx = 1
 		self.drilldict = {}
-		self.comments = {}
 		self.drilldata = []
 		self.outunitscale = 10**3
 		
@@ -165,6 +176,7 @@ class ExcellonBuilder:
 		self.xcoord = None
 		self.ycoord = None
 		self.badDims = 0
+		self.comments = {}
 	
 		for line in excellon:
 			LineOK = False
@@ -200,7 +212,7 @@ class ExcellonBuilder:
 			f.write('M48\n')
 			
 			#Comments
-			for c in self.comments:
+			for c in OUT_COMMENTS:
 				f.write(';{}\n'.format(c))
 				
 			#Units

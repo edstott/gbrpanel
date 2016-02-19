@@ -52,6 +52,7 @@ if __name__ == '__main__':
 			raise Exception
 			
 		with open(filename,'r') as file:
+			print(pair[1])
 			drillOut.addBoard(file)
 			
 	drillOut.closePanel()
