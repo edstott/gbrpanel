@@ -1,6 +1,7 @@
 import glob
 import os
 import subprocess
+import shutil
 
 import pairs
 import GerberBuilder
@@ -46,7 +47,7 @@ if __name__ == '__main__':
 	
 	for pair in pairs:
 		#Extract file
-		if subprocess.call(['7z','e',pair[1],'-y','NC Drill/'+filename],stdout=subprocess.PIPE,stderr=subprocess.PIPE):
+		if subprocess.call(['7z','e',pair[1],'-y',os.path.join('NC Drill',filename)],stdout=subprocess.PIPE,stderr=subprocess.PIPE):
 			print('Could not unzip '+filename+' from '+pair[1])
 			raise Exception
 			
